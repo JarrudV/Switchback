@@ -9,6 +9,8 @@ import {
   Check,
   Flame,
   BatteryCharging,
+  DownloadCloud,
+  Route,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -32,6 +34,8 @@ export function EventTracker({ goal }: Props) {
   );
   const [location, setLocation] = useState(goal?.location || "");
   const [link, setLink] = useState(goal?.link || "");
+  const [gpxUrl, setGpxUrl] = useState(goal?.gpxUrl || "");
+  const [scrapeUrl, setScrapeUrl] = useState("");
 
   useEffect(() => {
     if (goal) {
@@ -41,6 +45,7 @@ export function EventTracker({ goal }: Props) {
       setElevation(goal.elevationMeters?.toString() || "");
       setLocation(goal.location || "");
       setLink(goal.link || "");
+      setGpxUrl(goal.gpxUrl || "");
     }
   }, [goal]);
 
@@ -76,6 +81,30 @@ export function EventTracker({ goal }: Props) {
     return () => clearInterval(timer);
   }, [goal?.startDate]);
 
+  const [isScraping, setIsScraping] = useState(false);
+
+  const handleScrape = async () => {
+    if (!scrapeUrl) return;
+    setIsScraping(true);
+    try {
+      const res = await apiRequest("POST", `/api/scrape-event`, { url: scrapeUrl });
+      const data = await res.json();
+
+      if (data.title) setName(data.title);
+      if (data.distanceKm) setDistance(data.distanceKm.toString());
+      if (data.elevationMeters) setElevation(data.elevationMeters.toString());
+      if (data.date) setDate(data.date);
+
+      if (!link) setLink(scrapeUrl);
+
+      toast({ title: "Event details imported successfully!" });
+    } catch {
+      toast({ title: "Failed to scrape URL", variant: "destructive" });
+    } finally {
+      setIsScraping(false);
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -87,6 +116,7 @@ export function EventTracker({ goal }: Props) {
         elevationMeters: elevation ? parseInt(elevation, 10) : null,
         location: location || null,
         link: link || null,
+        gpxUrl: gpxUrl || null,
         notes: goal?.notes || null,
         createdAt: goal?.createdAt || new Date().toISOString(),
       };
@@ -136,9 +166,14 @@ export function EventTracker({ goal }: Props) {
               {goal.name}
             </h3>
             {goal.location && (
-              <p className="text-center text-brand-primary font-medium text-sm mb-6 flex items-center justify-center gap-1">
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(goal.location)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-center text-brand-primary font-medium text-sm mb-6 flex items-center justify-center gap-1 hover:underline decoration-brand-primary underline-offset-4"
+              >
                 <MapPin size={14} /> {goal.location}
-              </p>
+              </a>
             )}
 
             <div className="flex justify-center gap-3 mt-4">
@@ -193,6 +228,19 @@ export function EventTracker({ goal }: Props) {
             />
           </div>
 
+          {goal.gpxUrl && (
+            <a
+              href={goal.gpxUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center justify-center gap-2 w-full py-4 mb-3 rounded-xl glass-panel text-brand-success font-bold uppercase tracking-wider border border-brand-border"
+              data-testid="link-event-gpx"
+            >
+              GPS Route File{" "}
+              <Route size={18} className="text-brand-success" />
+            </a>
+          )}
+
           {goal.link && (
             <a
               href={goal.link}
@@ -219,6 +267,27 @@ export function EventTracker({ goal }: Props) {
             Configure Target Event
           </h3>
           <div className="space-y-4">
+
+            <div className="p-3 bg-brand-bg border border-brand-border/50 rounded-lg flex gap-2">
+              <input
+                type="url"
+                value={scrapeUrl}
+                onChange={(e) => setScrapeUrl(e.target.value)}
+                className="flex-1 bg-brand-bg text-brand-text border border-brand-border rounded-lg px-3 py-2 text-sm focus:border-brand-primary focus:ring-1 focus:ring-brand-primary outline-none"
+                placeholder="Auto-fill from URL..."
+                data-testid="input-scrape-url"
+              />
+              <button
+                type="button"
+                onClick={handleScrape}
+                disabled={!scrapeUrl || isScraping}
+                className="bg-brand-panel-2 border border-brand-border text-brand-text px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-brand-primary/20 disabled:opacity-50 transition-all font-mono"
+              >
+                <DownloadCloud size={16} />
+                {isScraping ? "..." : "Fetch"}
+              </button>
+            </div>
+
             <div>
               <label className="text-xs text-brand-muted font-medium block mb-1">
                 Event Name
@@ -300,6 +369,19 @@ export function EventTracker({ goal }: Props) {
                 className="w-full bg-brand-bg text-brand-text border border-brand-border rounded-lg px-3 py-2 text-sm focus:border-brand-primary focus:ring-1 focus:ring-brand-primary outline-none"
                 placeholder="https://..."
                 data-testid="input-event-link"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-brand-muted font-medium block mb-1">
+                GPS Route File Link (Strava/Komoot/GPX)
+              </label>
+              <input
+                type="url"
+                value={gpxUrl}
+                onChange={(e) => setGpxUrl(e.target.value)}
+                className="w-full bg-brand-bg text-brand-text border border-brand-border rounded-lg px-3 py-2 text-sm focus:border-brand-primary focus:ring-1 focus:ring-brand-primary outline-none"
+                placeholder="https://strava.com/routes/..."
+                data-testid="input-event-gpx-url"
               />
             </div>
             <button

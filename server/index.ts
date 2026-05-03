@@ -1,11 +1,22 @@
+import crypto from "crypto";
+if (typeof globalThis.crypto === "undefined") {
+  // @ts-ignore
+  globalThis.crypto = crypto.webcrypto;
+}
+
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
-import { setupAuth, registerAuthRoutes } from "./replit_integrations/auth";
+import { setupAuth, registerAuthRoutes } from "./auth";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { startReminderScheduler } from "./reminders";
+import { verifySchemaOrThrow } from "./schema-guard";
 
 const app = express();
 const httpServer = createServer(app);
+
+// Respect proxy headers (Railway / reverse proxies) so req.secure is accurate.
+app.set("trust proxy", 1);
 
 declare module "http" {
   interface IncomingMessage {
@@ -22,6 +33,12 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// Allow OAuth popup flows (e.g. Firebase Google sign-in) to close reliably.
+app.use((_req, res, next) => {
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+  next();
+});
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -61,9 +78,11 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  await verifySchemaOrThrow();
   await setupAuth(app);
   registerAuthRoutes(app);
   await registerRoutes(httpServer, app);
+  startReminderScheduler();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
@@ -93,14 +112,12 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-    },
-  );
+  const listenOptions: Parameters<typeof httpServer.listen>[0] =
+    process.platform === "win32"
+      ? { port, host: "0.0.0.0" }
+      : { port, host: "0.0.0.0", reusePort: true };
+
+  httpServer.listen(listenOptions, () => {
+    log(`serving on port ${port}`);
+  });
 })();

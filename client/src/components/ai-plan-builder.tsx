@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import {
   Sparkles,
   X,
@@ -16,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { GoalEvent } from "@shared/schema";
+import { useAuth } from "@/hooks/use-auth";
 
 interface Props {
   onClose: () => void;
@@ -35,6 +35,7 @@ const GOAL_OPTIONS = [
 
 export function AIPlanBuilder({ onClose, goal }: Props) {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [isGenerating, setIsGenerating] = useState(false);
   const [step, setStep] = useState(1);
 
@@ -43,6 +44,7 @@ export function AIPlanBuilder({ onClose, goal }: Props) {
   const [eventDistance, setEventDistance] = useState(goal?.distanceKm?.toString() || "");
   const [eventElevation, setEventElevation] = useState(goal?.elevationMeters?.toString() || "");
   const [fitnessLevel, setFitnessLevel] = useState<"beginner" | "intermediate" | "advanced">("intermediate");
+  const [age, setAge] = useState("");
   const [selectedGoals, setSelectedGoals] = useState<string[]>(["endurance"]);
   const [currentWeight, setCurrentWeight] = useState("");
   const [targetWeight, setTargetWeight] = useState("");
@@ -51,6 +53,12 @@ export function AIPlanBuilder({ onClose, goal }: Props) {
   const [equipment, setEquipment] = useState<"gym" | "home_full" | "home_minimal" | "no_equipment">("home_minimal");
   const [injuries, setInjuries] = useState("");
   const [additionalNotes, setAdditionalNotes] = useState("");
+
+  useEffect(() => {
+    if (user?.age && !age) {
+      setAge(String(user.age));
+    }
+  }, [user?.age, age]);
 
   const toggleGoal = (id: string) => {
     setSelectedGoals((prev) =>
@@ -67,54 +75,43 @@ export function AIPlanBuilder({ onClose, goal }: Props) {
       toast({ title: "Select at least one goal", variant: "destructive" });
       return;
     }
+    if (!age || Number(age) < 13 || Number(age) > 100) {
+      toast({ title: "Please enter a valid age (13-100)", variant: "destructive" });
+      return;
+    }
 
     setIsGenerating(true);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 90_000);
-
     try {
-      const res = await fetch("/api/plan/generate-ai", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        signal: controller.signal,
-        body: JSON.stringify({
-          eventName,
-          eventDate,
-          eventDistance: eventDistance ? Number(eventDistance) : undefined,
-          eventElevation: eventElevation ? Number(eventElevation) : undefined,
-          fitnessLevel,
-          goals: selectedGoals,
-          currentWeight: currentWeight ? Number(currentWeight) : undefined,
-          targetWeight: targetWeight ? Number(targetWeight) : undefined,
-          daysPerWeek,
-          hoursPerWeek,
-          equipment,
-          injuries: injuries || undefined,
-          additionalNotes: additionalNotes || undefined,
-        }),
+      await apiRequest("PUT", "/api/auth/profile", {
+        age: Number(age),
       });
-
+      const res = await apiRequest("POST", "/api/plan/generate-ai", {
+        eventName,
+        eventDate,
+        eventDistance: eventDistance ? Number(eventDistance) : undefined,
+        eventElevation: eventElevation ? Number(eventElevation) : undefined,
+        age: Number(age),
+        fitnessLevel,
+        goals: selectedGoals,
+        currentWeight: currentWeight ? Number(currentWeight) : undefined,
+        targetWeight: targetWeight ? Number(targetWeight) : undefined,
+        daysPerWeek,
+        hoursPerWeek,
+        equipment,
+        injuries: injuries || undefined,
+        additionalNotes: additionalNotes || undefined,
+      });
       const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || data.message || "Generation failed. Please try again.");
-      }
-
       queryClient.invalidateQueries({ queryKey: ["/api/sessions"] });
       toast({ title: `AI generated ${data.count} training sessions!` });
       onClose();
     } catch (err: any) {
-      const isTimeout = err.name === "AbortError";
       toast({
-        title: isTimeout ? "Request timed out" : "Plan generation failed",
-        description: isTimeout
-          ? "The AI took too long to respond. Please try again."
-          : err.message || "Please try again.",
+        title: "Plan generation failed",
+        description: err.message || "Please try again",
         variant: "destructive",
       });
     } finally {
-      clearTimeout(timeout);
       setIsGenerating(false);
     }
   };
@@ -272,6 +269,21 @@ export function AIPlanBuilder({ onClose, goal }: Props) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-[10px] font-bold uppercase tracking-widest text-brand-muted block mb-1.5">
+                    Age
+                  </label>
+                  <input
+                    type="number"
+                    min={13}
+                    max={100}
+                    value={age}
+                    onChange={(e) => setAge(e.target.value)}
+                    placeholder="Required"
+                    className="w-full bg-brand-bg border border-brand-border rounded-lg px-3 py-2.5 text-sm text-brand-text placeholder-brand-muted/50 focus:outline-none focus:ring-1 focus:ring-brand-primary"
+                    data-testid="input-age"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-widest text-brand-muted block mb-1.5">
                     <Weight size={10} className="inline mr-1" /> Current Weight (kg)
                   </label>
                   <input
@@ -283,7 +295,7 @@ export function AIPlanBuilder({ onClose, goal }: Props) {
                     data-testid="input-current-weight"
                   />
                 </div>
-                <div>
+                <div className="col-span-2">
                   <label className="text-[10px] font-bold uppercase tracking-widest text-brand-muted block mb-1.5">
                     <Target size={10} className="inline mr-1" /> Target Weight (kg)
                   </label>
@@ -445,7 +457,7 @@ export function AIPlanBuilder({ onClose, goal }: Props) {
                 {isGenerating ? (
                   <>
                     <Loader2 size={14} className="animate-spin" />
-                    Generating — up to 30s...
+                    Building Your Plan...
                   </>
                 ) : (
                   <>
@@ -458,7 +470,7 @@ export function AIPlanBuilder({ onClose, goal }: Props) {
           </div>
           {step === 3 && (
             <p className="text-[9px] text-brand-muted text-center mt-2 leading-relaxed">
-              This will replace your current training plan. Powered by Google Gemini.
+              This will replace your current training plan. AI uses Google Gemini via Replit — charges are minimal and billed to your credits.
             </p>
           )}
         </div>

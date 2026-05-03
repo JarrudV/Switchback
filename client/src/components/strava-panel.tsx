@@ -56,7 +56,13 @@ export function StravaPanel() {
       const data = await res.json();
       queryClient.invalidateQueries({ queryKey: ["/api/strava/activities"] });
       queryClient.invalidateQueries({ queryKey: ["/api/strava/status"] });
-      toast({ title: `Synced ${data.synced} rides from Strava` });
+      queryClient.invalidateQueries({ queryKey: ["/api/sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/coach/context"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/insights/latest-ride"] });
+      toast({
+        title: `Synced ${data.synced} rides from Strava`,
+        description: data.autoCompleted ? `${data.autoCompleted} sessions auto-completed` : undefined,
+      });
     } catch (err: any) {
       const msg = err.message || "";
       if (msg.includes("401") || msg.includes("Authorization") || msg.includes("permission")) {
@@ -74,7 +80,7 @@ export function StravaPanel() {
 
   const handleConnect = async () => {
     try {
-      const res = await fetch("/api/strava/auth-url");
+      const res = await apiRequest("GET", "/api/strava/auth-url");
       const data = await res.json();
       window.location.href = data.url;
     } catch {
@@ -141,7 +147,7 @@ export function StravaPanel() {
           )}
           {status?.lastSync && (
             <span className="text-[9px] text-brand-muted font-mono hidden sm:inline">
-              · {new Date(status.lastSync).toLocaleDateString()}
+              - {new Date(status.lastSync).toLocaleDateString()}
             </span>
           )}
         </div>
@@ -205,15 +211,14 @@ export function StravaPanel() {
 
       {activities.length > 3 && (
         <button
-          onClick={() => setIsOpen(!isOpen)}
-          className="w-full mt-2 py-2 text-[10px] font-bold uppercase tracking-widest text-brand-muted hover:text-brand-text transition-colors flex items-center justify-center gap-1"
-          data-testid="button-strava-show-more"
+          onClick={() => {
+            const navBtn = document.querySelector('[data-testid="nav-strava"]') as HTMLButtonElement;
+            if (navBtn) navBtn.click();
+          }}
+          className="w-full mt-2 py-2 text-[10px] font-bold uppercase tracking-widest text-brand-text hover:text-[#FC4C02] transition-colors flex items-center justify-center gap-1 bg-brand-bg rounded-lg border border-brand-border/50"
+          data-testid="button-strava-view-full"
         >
-          {isOpen ? (
-            <>Show Less <ChevronUp size={12} /></>
-          ) : (
-            <>Show All {activities.length} Rides <ChevronDown size={12} /></>
-          )}
+          View Full Ride History <ExternalLink size={12} />
         </button>
       )}
     </div>
@@ -278,3 +283,4 @@ function RideCard({ ride }: { ride: StravaActivity }) {
     </div>
   );
 }
+

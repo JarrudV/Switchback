@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { Modality } from "@google/genai";
-import { ai } from "./client";
+import { getImageAiClient } from "./client";
+import { getGeminiModel } from "../../gemini-client";
 
 export function registerImageRoutes(app: Express): void {
   app.post("/api/generate-image", async (req: Request, res: Response) => {
@@ -11,8 +12,9 @@ export function registerImageRoutes(app: Express): void {
         return res.status(400).json({ error: "Prompt is required" });
       }
 
+      const ai = getImageAiClient();
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-image",
+        model: getGeminiModel("gemini-2.5-flash-image"),
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: {
           responseModalities: [Modality.TEXT, Modality.IMAGE],
@@ -37,4 +39,3 @@ export function registerImageRoutes(app: Express): void {
     }
   });
 }
-

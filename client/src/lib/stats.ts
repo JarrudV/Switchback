@@ -100,46 +100,68 @@ export function calculateReadinessScore(
   metrics: Metric[],
   activeWeek: number
 ) {
-  if (sessions.length === 0) return 0;
+  return calculateReadinessDetails(metrics).score;
+}
 
-  let totalScore = 0;
-
-  const currentWeekStats = weekStats(sessions, activeWeek);
-  const weeklyScore =
-    (Math.min(currentWeekStats.completionPct, 100) / 100) * 40;
-  totalScore += weeklyScore;
-
-  const completed = sessions.filter((s) => s.completed).length;
-  const streakScore = Math.min((completed / 10) * 20, 20);
-  totalScore += streakScore;
-
-  let weightScore = 10;
-  const weightEntries = metrics
-    .filter((m) => m.weightKg !== undefined && m.weightKg !== null)
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  if (weightEntries.length > 1) {
-    const delta =
-      weightEntries[weightEntries.length - 1].weightKg! -
-      weightEntries[0].weightKg!;
-    if (delta < 0) {
-      weightScore = Math.min(20, 10 + Math.abs(delta) * 2);
-    } else if (delta > 0) {
-      weightScore = Math.max(0, 10 - delta * 2);
-    }
-  }
-  totalScore += weightScore;
-
-  const today = new Date();
-  const pastSessions = sessions.filter(
-    (s) => s.scheduledDate && parseISODate(s.scheduledDate) <= today
+export function calculateReadinessDetails(metrics: Metric[]) {
+  const sortedByDate = [...metrics].sort((a, b) =>
+    new Date(a.date).getTime() - new Date(b.date).getTime()
   );
-  if (pastSessions.length > 0) {
-    const pastCompleted = pastSessions.filter((s) => s.completed).length;
-    const consistencyScore = (pastCompleted / pastSessions.length) * 20;
-    totalScore += consistencyScore;
-  } else {
-    totalScore += 20;
+
+  const fatigueEntries = sortedByDate.filter(
+    (m) => m.fatigue !== undefined && m.fatigue !== null
+  );
+  const latestFatigue = fatigueEntries.at(-1)?.fatigue;
+
+  // Primary driver: fatigue (1 = fresh, 10 = exhausted).
+  const fatigueValue =
+    latestFatigue === undefined || latestFatigue === null
+      ? 5
+      : Math.min(10, Math.max(1, Number(latestFatigue)));
+  const fatigueScore = Math.round(100 - ((fatigueValue - 1) / 9) * 90); // 1->100, 10->10
+
+  const rhrEntries = sortedByDate.filter(
+    (m) => m.restingHr !== undefined && m.restingHr !== null
+  );
+  const latestRhr = rhrEntries.at(-1)?.restingHr ?? null;
+  const baselineCandidates = rhrEntries.slice(0, -1).map((m) => Number(m.restingHr));
+  const baselineRhr =
+    baselineCandidates.length >= 3
+      ? Math.round(
+          baselineCandidates.reduce((sum, value) => sum + value, 0) /
+            baselineCandidates.length
+        )
+      : null;
+
+  if (!baselineRhr || latestRhr === null) {
+    return {
+      score: fatigueScore,
+      fatigueScore,
+      latestFatigue: fatigueValue,
+      latestRhr,
+      baselineRhr: null,
+      usesRhrBaseline: false,
+    };
   }
 
-  return Math.round(Math.min(100, Math.max(0, totalScore)));
+  const deviationPct = ((Number(latestRhr) - baselineRhr) / baselineRhr) * 100;
+  // Resting HR above baseline reduces readiness; below baseline gives a small boost.
+  const rhrAdjustment =
+    deviationPct > 0
+      ? Math.max(-25, -Math.round(deviationPct * 4))
+      : Math.min(8, Math.round(Math.abs(deviationPct) * 2));
+  const rhrAdjustedScore = Math.max(0, Math.min(100, fatigueScore + rhrAdjustment));
+
+  const score = Math.round(
+    Math.max(0, Math.min(100, fatigueScore * 0.85 + rhrAdjustedScore * 0.15))
+  );
+
+  return {
+    score,
+    fatigueScore,
+    latestFatigue: fatigueValue,
+    latestRhr,
+    baselineRhr,
+    usesRhrBaseline: true,
+  };
 }

@@ -1,11 +1,17 @@
 {
+  "id": "/",
   "name": "PeakReady",
   "short_name": "PeakReady",
   "description": "Mountain bike training tracker",
+  "lang": "en-US",
   "start_url": "/",
+  "orientation": "portrait-primary",
   "display": "standalone",
+  "display_override": ["fullscreen", "standalone", "minimal-ui"],
+  "scope": "/",
   "background_color": "#0a0e1a",
-  "theme_color": "#41d1ff",
+  "theme_color": "#0a0e1a",
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/icon-192.png",

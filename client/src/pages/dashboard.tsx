@@ -1,357 +1,510 @@
-import { useState, useMemo } from "react";
-import type { Session, Metric, GoalEvent } from "@shared/schema";
-import {
-  weekStats,
-  totalCompletedSessions,
-  latestMetric,
-  planStatus,
-  calculateReadinessScore,
-} from "@/lib/stats";
-import {
-  ChevronDown,
-  TrendingDown,
-  TrendingUp,
-  Minus,
-  Zap,
-  Activity as ActivityIcon,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import { StravaPanel } from "@/components/strava-panel";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { Session } from "@shared/schema";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { WorkoutDetailModal } from "@/components/workout-detail-modal";
 
-const DAILY_QUOTES = [
-  { text: "The pain you feel today will be the strength you feel tomorrow.", author: "Arnold Schwarzenegger" },
-  { text: "It never gets easier, you just get faster.", author: "Greg LeMond" },
-  { text: "Suffer now and live the rest of your life as a champion.", author: "Muhammad Ali" },
-  { text: "The bicycle is the most civilized conveyance known to man.", author: "Iris Murdoch" },
-  { text: "Life is like riding a bicycle. To keep your balance, you must keep moving.", author: "Albert Einstein" },
-  { text: "Nothing compares to the simple pleasure of riding a bike.", author: "John F. Kennedy" },
-  { text: "Persistence can change failure into extraordinary achievement.", author: "Marv Levy" },
-  { text: "Don't count the days, make the days count.", author: "Muhammad Ali" },
-  { text: "When my legs hurt, I say: Shut up legs! Do what I tell you to do!", author: "Jens Voigt" },
-  { text: "Champions keep playing until they get it right.", author: "Billie Jean King" },
-  { text: "The only impossible journey is the one you never begin.", author: "Tony Robbins" },
-  { text: "Strength does not come from winning. It comes from the struggles.", author: "Mahatma Gandhi" },
-  { text: "A year from now you will wish you had started today.", author: "Karen Lamb" },
-  { text: "The hardest part is showing up. After that, the ride takes care of itself.", author: "Unknown" },
-  { text: "The mountains are calling and I must go.", author: "John Muir" },
-  { text: "Every ride is a chance to feel alive.", author: "Unknown" },
-  { text: "Success isn't always about greatness. It's about consistency.", author: "Dwayne Johnson" },
-  { text: "Sore today. Strong tomorrow.", author: "Unknown" },
-  { text: "Push yourself, because no one else is going to do it for you.", author: "Unknown" },
-  { text: "Ride as much or as little, as long or as short as you feel. But ride.", author: "Eddy Merckx" },
-  { text: "The best rides are the ones where you bite off much more than you can chew.", author: "Doug Bradbury" },
-  { text: "It's not about the bike.", author: "Lance Armstrong" },
-  { text: "Sweat is just fat crying.", author: "Unknown" },
-  { text: "Cycling is the new golf. It's the new networking.", author: "Patrick Dempsey" },
-  { text: "Ride your bike, ride your bike, ride your bike.", author: "Fausto Coppi" },
-  { text: "The will to win means nothing without the will to prepare.", author: "Juma Ikangaa" },
-  { text: "What doesn't kill you makes you stronger.", author: "Friedrich Nietzsche" },
-  { text: "When the spirits are low, when the day appears dark, just mount a bicycle.", author: "Arthur Conan Doyle" },
-  { text: "Somewhere behind the athlete you've become is the child who fell in love with the sport.", author: "Unknown" },
-  { text: "The real workout starts when you want to stop.", author: "Ronnie Coleman" },
-  { text: "Think of what it would mean to have that body, that health, that freedom.", author: "Unknown" },
-];
-
-function getDailyQuote() {
-  const now = new Date();
-  const dayOfYear = Math.floor(
-    (now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86400000
-  );
-  return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
-}
+const WEEKDAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
 interface Props {
   sessions: Session[];
-  metrics: Metric[];
-  goal?: GoalEvent;
   activeWeek: number;
-  onWeekChange: (week: number) => void;
+  maxWeek: number;
+  onOpenPlan: () => void;
+  onOpenCoach: () => void;
 }
 
-export function Dashboard({
-  sessions,
-  metrics,
-  goal,
-  activeWeek,
-  onWeekChange,
-}: Props) {
-  const currentWeekStats = weekStats(sessions, activeWeek);
-  const targetHours = currentWeekStats.targetMinutes / 60;
-  const completedHours = currentWeekStats.completedMinutes / 60;
-  const completionPct = currentWeekStats.completionPct;
+interface CoachProposalChange {
+  sessionId: string;
+  sessionLabel: string;
+  before: {
+    minutes: number;
+    zone: string | null;
+  };
+  after: {
+    minutes: number;
+    zone: string | null;
+  };
+  reason: string;
+}
 
-  const totalSessions = totalCompletedSessions(sessions);
-  const statusInfo = planStatus(sessions, goal);
-  const readinessScore = calculateReadinessScore(sessions, metrics, activeWeek);
+interface LatestRideInsight {
+  insightId: string;
+  activity: {
+    id: string;
+    name: string;
+    startDate: string;
+  };
+  matchedSession: {
+    id: string;
+    label: string;
+    completed: boolean;
+  } | null;
+  summary: {
+    headline: string;
+    text: string;
+  };
+  metrics: Array<{ label: string; value: string }>;
+  proposal: {
+    id: string;
+    status: "pending" | "applied" | "cancelled" | "expired";
+    activeWeek: number;
+    changes: CoachProposalChange[];
+  } | null;
+}
 
-  const currentWeight = latestMetric(metrics, "weightKg");
+function dayOrder(day: string): number {
+  const idx = WEEKDAY_ORDER.indexOf((day || "").slice(0, 3).toLowerCase());
+  return idx >= 0 ? idx : 99;
+}
 
-  let weightDelta: number | null = null;
-  const weightEntries = metrics
-    .filter((m) => m.weightKg !== undefined && m.weightKg !== null)
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  if (weightEntries.length > 1) {
-    weightDelta =
-      weightEntries[weightEntries.length - 1].weightKg! -
-      weightEntries[0].weightKg!;
-  }
+function getTodayOrder(): number {
+  const day = new Date().getDay();
+  return day === 0 ? 6 : day - 1;
+}
 
-  const latestFatigue = latestMetric(metrics, "fatigue");
-  const dailyQuote = useMemo(() => getDailyQuote(), []);
+function isRideSession(session: Session): boolean {
+  return session.type === "Ride" || session.type === "Long Ride";
+}
+
+function isPastDueRide(session: Session, todayIso: string, todayOrder: number): boolean {
+  if (session.completed || !isRideSession(session)) return false;
+  if (session.scheduledDate) return session.scheduledDate < todayIso;
+  return dayOrder(session.day) < todayOrder;
+}
+
+function effortTypeForSession(session: Session): string {
+  if (session.type === "Strength") return "Strength";
+  if (session.type === "Rest") return "Recovery";
+  if (session.zone) return session.zone;
+
+  const description = (session.description || "").toLowerCase();
+  if (description.includes("skill") || description.includes("trail")) return "Skills";
+  if (session.type === "Long Ride") return "Endurance";
+  return "Ride";
+}
+
+function shiftIsoDateByDays(isoDate: string, deltaDays: number): string | null {
+  const parsed = new Date(`${isoDate}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  parsed.setUTCDate(parsed.getUTCDate() + deltaDays);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function getCurrentWeekMondayIso(): string {
+  const now = new Date();
+  const day = now.getUTCDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  monday.setUTCDate(monday.getUTCDate() + mondayOffset);
+  return monday.toISOString().slice(0, 10);
+}
+
+function getExpectedDateForCurrentWeek(day: string): string | null {
+  const order = dayOrder(day);
+  if (order < 0 || order > 6) return null;
+  return shiftIsoDateByDays(getCurrentWeekMondayIso(), order);
+}
+
+function diffIsoDays(fromIso: string, toIso: string): number | null {
+  const from = new Date(`${fromIso}T00:00:00Z`);
+  const to = new Date(`${toIso}T00:00:00Z`);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null;
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
+}
+
+function formatDateLong(iso: string): string {
+  const parsed = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  return parsed.toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatChangeSummary(change: CoachProposalChange): string {
+  const beforeZone = change.before.zone ? ` ${change.before.zone}` : "";
+  const afterZone = change.after.zone ? ` ${change.after.zone}` : "";
+  return `${change.before.minutes}min${beforeZone} -> ${change.after.minutes}min${afterZone}`;
+}
+
+export function Dashboard({ sessions, activeWeek, maxWeek, onOpenPlan, onOpenCoach }: Props) {
+  const [viewingSession, setViewingSession] = useState<Session | null>(null);
+  const [proposalActionLoading, setProposalActionLoading] = useState(false);
+  const [realignLoading, setRealignLoading] = useState(false);
+  const [dismissedAlignment, setDismissedAlignment] = useState(false);
+  const { toast } = useToast();
+
+  const { data: latestInsight } = useQuery<LatestRideInsight | null>({
+    queryKey: ["/api/insights/latest-ride"],
+  });
+
+  const weeklySessions = useMemo(
+    () =>
+      sessions
+        .filter((session) => session.week === activeWeek)
+        .sort((a, b) => {
+          if (a.scheduledDate && b.scheduledDate) {
+            return a.scheduledDate.localeCompare(b.scheduledDate);
+          }
+          return dayOrder(a.day) - dayOrder(b.day);
+        }),
+    [sessions, activeWeek],
+  );
+
+  const alignmentSuggestion = useMemo(() => {
+    const pending = weeklySessions
+      .filter((session) => !session.completed && !!session.scheduledDate)
+      .sort((a, b) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""));
+    const firstPending = pending[0];
+    if (!firstPending?.scheduledDate) return null;
+
+    const expected = getExpectedDateForCurrentWeek(firstPending.day);
+    if (!expected) return null;
+
+    const deltaDays = diffIsoDays(firstPending.scheduledDate, expected);
+    if (deltaDays === null || Math.abs(deltaDays) < 3) return null;
+
+    return {
+      fromDate: firstPending.scheduledDate,
+      toDate: expected,
+      deltaDays,
+    };
+  }, [weeklySessions]);
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayOrder = getTodayOrder();
+
+  const plannedRideSessions = weeklySessions.filter(isRideSession);
+  const completedRideCount = plannedRideSessions.filter((session) => session.completed).length;
+  const hasMissedRide = plannedRideSessions.some((session) =>
+    isPastDueRide(session, todayIso, todayOrder),
+  );
+  const statusLabel = hasMissedRide ? "Needs Adjustment" : "On Track";
+  const rideCompletionText = `${completedRideCount} of ${plannedRideSessions.length} rides completed`;
+  const rideCompletionPct = plannedRideSessions.length
+    ? Math.round((completedRideCount / plannedRideSessions.length) * 100)
+    : 0;
+
+  const incompleteRideSessions = plannedRideSessions.filter((session) => !session.completed);
+  const nextUpcomingRide = incompleteRideSessions.find(
+    (session) => !isPastDueRide(session, todayIso, todayOrder),
+  );
+  const nextRide = nextUpcomingRide || incompleteRideSessions[0] || null;
+
+  const plannedHours = weeklySessions.reduce((sum, session) => sum + (session.minutes || 0), 0) / 60;
+  const completedHours =
+    weeklySessions
+      .filter((session) => session.completed)
+      .reduce((sum, session) => sum + (session.minutes || 0), 0) / 60;
+  const consistencyScore = plannedRideSessions.length
+    ? Math.max(0, Math.min(10, Math.round((completedRideCount / plannedRideSessions.length) * 10)))
+    : 0;
+
+  const handleToggleComplete = async (session: Session) => {
+    try {
+      await apiRequest("PATCH", `/api/sessions/${session.id}`, {
+        completed: !session.completed,
+        completedAt: !session.completed ? new Date().toISOString() : null,
+        completionSource: !session.completed ? "manual" : null,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["/api/sessions"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/metrics"] });
+    } catch {
+      toast({ title: "Failed to update session", variant: "destructive" });
+    }
+  };
+
+  const handleApplyProposal = async (proposalId: string) => {
+    if (proposalActionLoading) return;
+    setProposalActionLoading(true);
+    try {
+      const res = await apiRequest("POST", `/api/coach/proposals/${proposalId}/apply`);
+      const data = await res.json() as { appliedCount: number; skippedCount: number };
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/sessions"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/coach/context"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/insights/latest-ride"] }),
+      ]);
+      toast({
+        title: "Coach changes applied",
+        description: `${data.appliedCount} applied, ${data.skippedCount} skipped.`,
+      });
+    } catch (err: any) {
+      toast({
+        title: "Failed to apply coach changes",
+        description: err?.message || "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setProposalActionLoading(false);
+    }
+  };
+
+  const handleCancelProposal = async (proposalId: string) => {
+    if (proposalActionLoading) return;
+    setProposalActionLoading(true);
+    try {
+      await apiRequest("POST", `/api/coach/proposals/${proposalId}/cancel`);
+      await queryClient.invalidateQueries({ queryKey: ["/api/insights/latest-ride"] });
+      toast({ title: "Coach changes cancelled" });
+    } catch (err: any) {
+      toast({
+        title: "Failed to cancel coach changes",
+        description: err?.message || "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setProposalActionLoading(false);
+    }
+  };
+
+  const handleShiftPendingSessions = async () => {
+    if (realignLoading) return;
+    setRealignLoading(true);
+    try {
+      const res = await apiRequest("POST", "/api/plan/realign-current-week");
+      const data = await res.json() as { affectedCount: number; fromDate: string; toDate: string };
+      await queryClient.invalidateQueries({ queryKey: ["/api/sessions"] });
+      toast({
+        title: "Plan dates shifted",
+        description: `${data.affectedCount} pending sessions moved from ${data.fromDate} to ${data.toDate}.`,
+      });
+      setDismissedAlignment(true);
+    } catch (err: any) {
+      toast({
+        title: "Failed to shift pending sessions",
+        description: err?.message || "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setRealignLoading(false);
+    }
+  };
 
   return (
-    <div className="p-4 space-y-6" data-testid="dashboard-view">
-      <div className="flex justify-between items-center relative z-10">
-        <h2 className="text-2xl font-bold text-brand-text" data-testid="text-dashboard-title">
-          Dashboard
-        </h2>
-        <div className="relative">
-          <select
-            value={activeWeek}
-            onChange={(e) => onWeekChange(parseInt(e.target.value, 10))}
-            className="appearance-none glass-panel py-2 pl-4 pr-10 text-brand-text font-bold uppercase tracking-widest text-xs focus:outline-none focus:ring-1 focus:ring-brand-primary cursor-pointer"
-            data-testid="select-week"
-          >
-            {Array.from({ length: 12 }, (_, i) => i + 1).map((w) => (
-              <option
-                className="bg-brand-bg text-brand-text"
-                key={w}
-                value={w}
-              >
-                Week {w}
-              </option>
-            ))}
-          </select>
-          <ChevronDown
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-primary pointer-events-none"
-            size={16}
-          />
-        </div>
-      </div>
-
-      <div className="glass-panel px-5 py-4 relative overflow-hidden border-l-2 border-brand-primary/40" data-testid="daily-quote">
-        <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-primary opacity-10 blur-3xl -mr-8 -mt-8 rounded-full pointer-events-none" />
-        <p className="text-sm italic text-brand-text/90 leading-relaxed relative z-10" data-testid="text-quote">
-          "{dailyQuote.text}"
-        </p>
-        <p className="text-[10px] uppercase tracking-widest font-bold text-brand-muted mt-1.5 relative z-10" data-testid="text-quote-author">
-          — {dailyQuote.author}
-        </p>
-      </div>
-
-      <div className="glass-panel p-6 shadow-[0_0_20px_rgba(189,52,254,0.15)] relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-primary opacity-20 blur-3xl -mr-10 -mt-10 rounded-full" />
-        <h3 className="text-brand-muted text-[10px] uppercase tracking-widest font-bold mb-1 relative z-10">
-          Weekly Progress
-        </h3>
-        <div className="flex items-end gap-2 mb-4 relative z-10">
+    <div className="px-1 py-2 space-y-5" data-testid="dashboard-view">
+      <section className="glass-panel p-3.5 space-y-2.5" data-testid="dash-status-section">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-base font-semibold text-brand-text">Week {activeWeek} of {maxWeek}</h2>
           <span
-            className="text-5xl font-black font-mono text-gradient-primary"
-            data-testid="text-completed-hours"
+            className={
+              hasMissedRide
+                ? "rounded-md bg-brand-warning/14 text-brand-warning px-2 py-0.5 text-[11px] font-medium"
+                : "rounded-md bg-brand-success/14 text-brand-success px-2 py-0.5 text-[11px] font-medium"
+            }
+            data-testid="dash-status-badge"
           >
-            {completedHours.toFixed(1)}
-          </span>
-          <span className="text-brand-muted font-bold text-sm mb-1 uppercase tracking-widest">
-            / {targetHours.toFixed(1)} hrs
+            {statusLabel}
           </span>
         </div>
-        <div className="w-full bg-brand-bg/50 rounded-full h-3 mb-2 relative overflow-hidden z-10 border border-brand-border/50">
+        <p className="text-sm text-brand-muted" data-testid="dash-ride-progress-text">
+          {rideCompletionText}
+        </p>
+        <div className="h-1.5 rounded-full bg-brand-bg/45 overflow-hidden">
           <div
-            className="bg-gradient-secondary h-3 rounded-full transition-all duration-1000 ease-out shadow-[0_0_8px_rgba(255,168,0,0.8)]"
-            style={{ width: `${Math.min(completionPct, 100)}%` }}
-            data-testid="progress-weekly"
+            className="h-1.5 rounded-full bg-brand-primary transition-all duration-300"
+            style={{ width: `${Math.max(0, Math.min(100, rideCompletionPct))}%` }}
+            data-testid="dash-ride-progress-bar"
           />
         </div>
-        <div className="flex justify-between text-[10px] uppercase font-bold text-brand-muted relative z-10">
-          <span>0%</span>
-          <span
-            className={cn(
-              completionPct === 100 && "text-brand-success font-black"
-            )}
-          >
-            {completionPct}%
-          </span>
-        </div>
-      </div>
+      </section>
 
-      <div className="grid grid-cols-2 gap-4">
-        <div className="glass-panel p-5 flex flex-col justify-between col-span-2 shadow-[0_0_15px_rgba(65,209,255,0.05)] relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-32 h-32 bg-gradient-primary opacity-10 blur-3xl -ml-10 -mt-10 rounded-full pointer-events-none" />
-          <div className="flex justify-between items-center relative z-10">
-            <h3 className="text-brand-muted text-[10px] uppercase tracking-widest font-bold flex items-center gap-1">
-              <Zap size={12} className="text-brand-primary" /> Readiness Score
-            </h3>
-            <span className="text-[10px] font-bold text-brand-muted uppercase tracking-widest">
-              0-100
-            </span>
+      {alignmentSuggestion && !dismissedAlignment && (
+        <section
+          className="glass-panel p-3 border border-brand-warning/35 bg-brand-warning/8 space-y-2"
+          data-testid="dash-alignment-banner"
+        >
+          <p className="text-sm font-medium text-brand-warning">
+            Plan starts {formatDateLong(alignmentSuggestion.fromDate)}, today is {formatDateLong(todayIso)}.
+          </p>
+          <p className="text-xs text-brand-muted">
+            Shift pending sessions to align current week dates?
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleShiftPendingSessions}
+              disabled={realignLoading}
+              className="min-h-[36px] rounded-md border border-brand-warning/35 bg-brand-warning/15 px-3 text-xs font-medium text-brand-warning disabled:opacity-60"
+              data-testid="button-shift-pending-sessions"
+            >
+              {realignLoading ? "Shifting..." : "Shift Pending Sessions"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setDismissedAlignment(true)}
+              className="min-h-[36px] rounded-md border border-brand-border/40 px-3 text-xs text-brand-muted"
+              data-testid="button-dismiss-alignment-banner"
+            >
+              Dismiss
+            </button>
           </div>
-          <div className="mt-4 flex items-center justify-between relative z-10">
-            <div className="flex items-baseline gap-2">
+        </section>
+      )}
+
+      {latestInsight && (
+        <section className="glass-panel p-3.5 space-y-3" data-testid="dash-latest-ride-insight">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-brand-muted">Latest Synced Ride Insight</p>
+            <h3 className="text-base font-semibold text-brand-text mt-1">{latestInsight.summary.headline}</h3>
+            <p className="text-xs text-brand-muted mt-1">
+              {latestInsight.activity.name} - {new Date(latestInsight.activity.startDate).toLocaleString()}
+            </p>
+            {latestInsight.matchedSession && (
+              <p className="text-xs text-brand-primary mt-1">
+                Matched session: {latestInsight.matchedSession.label}
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            {latestInsight.metrics.map((metric) => (
               <span
-                className={cn(
-                  "text-5xl font-black font-mono",
-                  readinessScore >= 80
-                    ? "text-brand-success drop-shadow-[0_0_10px_rgba(89,191,150,0.6)]"
-                    : readinessScore >= 50
-                      ? "text-brand-secondary drop-shadow-[0_0_10px_rgba(255,234,131,0.6)]"
-                      : "text-brand-danger drop-shadow-[0_0_10px_rgba(255,92,122,0.6)]"
-                )}
-                data-testid="text-readiness-score"
+                key={`${latestInsight.insightId}-${metric.label}`}
+                className="rounded-full border border-brand-border/40 bg-brand-panel-2/20 px-2 py-0.5 text-[11px] text-brand-muted"
               >
-                {readinessScore}
+                {metric.label}: {metric.value}
               </span>
-              <span className="text-xs uppercase font-bold text-brand-muted tracking-widest">
-                {readinessScore >= 80
-                  ? "Peak"
-                  : readinessScore >= 50
-                    ? "Steady"
-                    : "Recover"}
-              </span>
-            </div>
+            ))}
           </div>
-        </div>
 
-        <div className="glass-panel p-5 flex flex-col justify-between col-span-2 shadow-[0_0_15px_rgba(189,52,254,0.05)]">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="text-brand-muted text-[10px] uppercase tracking-widest font-bold flex items-center gap-1">
-              <ActivityIcon size={12} className="text-brand-primary" /> Plan vs
-              Timeline
-            </h3>
-            <div
-              className={cn(
-                "text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-md border",
-                statusInfo.behindCount === 0
-                  ? "bg-brand-success/20 text-brand-success border-brand-success/30"
-                  : statusInfo.behindCount <= 2
-                    ? "bg-brand-secondary/20 text-brand-secondary border-brand-secondary/30"
-                    : "bg-brand-danger/20 text-brand-danger border-brand-danger/30 shadow-[0_0_8px_rgba(255,92,122,0.4)]"
+          <p className="text-sm text-brand-muted leading-relaxed">{latestInsight.summary.text}</p>
+
+          {latestInsight.proposal && (
+            <div className="rounded-lg border border-brand-border/35 bg-brand-panel-2/18 p-2.5 space-y-2">
+              <p className="text-xs font-medium text-brand-text">Apply coach changes to this week?</p>
+              <div className="space-y-1.5">
+                {latestInsight.proposal.changes.map((change) => (
+                  <div
+                    key={`${latestInsight.proposal!.id}-${change.sessionId}`}
+                    className="rounded-md border border-brand-border/30 bg-brand-panel/25 px-2 py-1.5"
+                  >
+                    <p className="text-xs text-brand-muted">
+                      <span className="text-brand-text font-medium">Session:</span> {change.sessionLabel}
+                    </p>
+                    <p className="text-xs text-brand-muted">
+                      <span className="text-brand-text font-medium">Change:</span> {formatChangeSummary(change)}
+                    </p>
+                    <p className="text-xs text-brand-muted">
+                      <span className="text-brand-text font-medium">Reason:</span> {change.reason}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {latestInsight.proposal.status === "pending" ? (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleApplyProposal(latestInsight.proposal!.id)}
+                    disabled={proposalActionLoading}
+                    className="flex-1 min-h-[36px] rounded-md bg-brand-success/15 border border-brand-success/30 text-brand-success text-xs font-medium disabled:opacity-60"
+                    data-testid="button-dash-apply-proposal"
+                  >
+                    Apply
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCancelProposal(latestInsight.proposal!.id)}
+                    disabled={proposalActionLoading}
+                    className="flex-1 min-h-[36px] rounded-md bg-brand-danger/12 border border-brand-danger/30 text-brand-danger text-xs font-medium disabled:opacity-60"
+                    data-testid="button-dash-cancel-proposal"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <p className="text-xs text-brand-muted capitalize">Proposal {latestInsight.proposal.status}</p>
               )}
-              data-testid="text-plan-status"
-            >
-              {statusInfo.status}
             </div>
-          </div>
-          <div className="space-y-3">
-            <div>
-              <div className="flex justify-between text-[10px] uppercase font-bold text-brand-muted mb-1">
-                <span>Time Elapsed</span>
-                <span className="text-white">{statusInfo.planProgress}%</span>
-              </div>
-              <div className="w-full bg-brand-bg/50 rounded-full h-1.5 overflow-hidden">
-                <div
-                  className="bg-brand-muted h-1.5 rounded-full"
-                  style={{ width: `${statusInfo.planProgress}%` }}
-                />
-              </div>
-            </div>
-            <div>
-              <div className="flex justify-between text-[10px] uppercase font-bold text-brand-muted mb-1">
-                <span>Sessions Done</span>
-                <span className="text-brand-primary drop-shadow-[0_0_5px_rgba(65,209,255,0.6)]">
-                  {statusInfo.sessionProgress}%
-                </span>
-              </div>
-              <div className="w-full bg-brand-bg/50 rounded-full h-1.5 overflow-hidden">
-                <div
-                  className="bg-gradient-primary h-1.5 rounded-full shadow-[0_0_8px_rgba(65,209,255,0.8)]"
-                  style={{ width: `${statusInfo.sessionProgress}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
+          )}
 
-        <div className="glass-panel p-4 flex flex-col justify-between">
-          <h3 className="text-brand-muted text-[10px] uppercase tracking-widest font-bold">
-            Total Sessions
-          </h3>
-          <span className="text-3xl font-black font-mono mt-1 text-white" data-testid="text-total-sessions">
-            {totalSessions}
-          </span>
-        </div>
+          <button
+            type="button"
+            onClick={onOpenCoach}
+            className="text-xs font-medium text-brand-primary underline underline-offset-2"
+            data-testid="button-open-coach-from-insight"
+          >
+            Ask follow-up in Coach
+          </button>
+        </section>
+      )}
 
-        <div className="glass-panel p-4 flex flex-col justify-between">
-          <h3 className="text-brand-muted text-[10px] uppercase tracking-widest font-bold">
-            Weight
-          </h3>
-          <div className="flex items-end justify-between mt-2">
-            <span className="text-2xl font-black font-mono">
-              {currentWeight !== undefined
-                ? `${Number(currentWeight).toFixed(1)}`
-                : "--"}
-              <span className="text-[10px] font-bold text-brand-muted ml-0.5 uppercase">
-                kg
-              </span>
-            </span>
-            {weightDelta !== null && (
-              <div
-                className={cn(
-                  "flex items-center text-[10px] font-bold px-2 py-1 rounded-full",
-                  weightDelta < 0
-                    ? "bg-brand-success/20 text-brand-success"
-                    : weightDelta > 0
-                      ? "bg-brand-danger/20 text-brand-danger shadow-[0_0_8px_rgba(255,92,122,0.4)]"
-                      : "bg-brand-panel-2 text-brand-muted"
-                )}
-              >
-                {weightDelta < 0 ? (
-                  <TrendingDown size={12} className="mr-1" />
-                ) : weightDelta > 0 ? (
-                  <TrendingUp size={12} className="mr-1" />
-                ) : (
-                  <Minus size={12} className="mr-1" />
-                )}
-                {Math.abs(weightDelta).toFixed(1)}
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="glass-panel p-4 flex flex-col justify-between col-span-2">
-          <div className="flex justify-between items-center">
-            <h3 className="text-brand-muted text-[10px] uppercase tracking-widest font-bold">
-              Latest Fatigue
-            </h3>
-            <span className="text-[10px] font-bold text-brand-muted uppercase tracking-widest bg-brand-bg/50 px-2 py-1 rounded-md border border-brand-border/30">
-              Scale: 1-10
-            </span>
-          </div>
-          <div className="mt-3 flex items-center">
-            <span
-              className={cn(
-                "text-3xl font-black font-mono",
-                latestFatigue !== undefined && Number(latestFatigue) >= 8
-                  ? "text-brand-danger drop-shadow-[0_0_8px_rgba(255,92,122,0.6)]"
-                  : latestFatigue !== undefined && Number(latestFatigue) >= 5
-                    ? "text-brand-warning drop-shadow-[0_0_8px_rgba(255,168,0,0.6)]"
-                    : "text-brand-success drop-shadow-[0_0_8px_rgba(89,191,150,0.6)]"
+      <section
+        className="glass-panel p-4 space-y-3.5 border border-brand-primary/25 shadow-[0_8px_20px_rgba(0,0,0,0.14)]"
+        data-testid="dash-next-ride-section"
+      >
+        <h3 className="text-lg font-semibold text-brand-text">Next ride</h3>
+        {nextRide ? (
+          <>
+            <div className="space-y-1">
+              <p className="text-sm text-brand-muted">
+                {nextRide.day}
+                {nextRide.scheduledDate ? ` - ${nextRide.scheduledDate}` : ""}
+              </p>
+              <p className="text-lg font-semibold text-brand-text leading-snug">{nextRide.description}</p>
+              <p className="text-sm text-brand-muted">
+                {nextRide.minutes} min - {effortTypeForSession(nextRide)}
+              </p>
+              {nextRide.adjustedByCoach && (
+                <p className="inline-flex items-center mt-1 rounded-full border border-brand-primary/35 bg-brand-primary/12 px-2 py-0.5 text-[11px] text-brand-primary">
+                  Adjusted by Coach
+                </p>
               )}
-              data-testid="text-fatigue"
+            </div>
+            <button
+              type="button"
+              onClick={() => setViewingSession(nextRide)}
+              className="w-full min-h-[48px] rounded-lg bg-[#22c55e] text-white font-semibold text-sm"
+              data-testid="button-view-next-session"
             >
-              {latestFatigue ?? "--"}
-            </span>
-            {latestFatigue !== undefined && (
-              <div className="ml-4 flex-1 h-3 bg-brand-bg/50 rounded-full overflow-hidden border border-brand-border/50">
-                <div
-                  className={cn(
-                    "h-full rounded-full transition-all",
-                    Number(latestFatigue) >= 8
-                      ? "bg-brand-danger shadow-[0_0_8px_rgba(255,92,122,0.8)]"
-                      : Number(latestFatigue) >= 5
-                        ? "bg-gradient-secondary shadow-[0_0_8px_rgba(255,168,0,0.8)]"
-                        : "bg-brand-success"
-                  )}
-                  style={{
-                    width: `${(Number(latestFatigue) / 10) * 100}%`,
-                  }}
-                />
-              </div>
-            )}
+              View Session
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-brand-muted">
+              No upcoming ride for this week. Open your week plan to review or adjust sessions.
+            </p>
+            <button
+              type="button"
+              onClick={onOpenPlan}
+              className="w-full min-h-[44px] rounded-lg text-brand-primary text-sm font-medium underline-offset-2 hover:underline"
+              data-testid="button-open-plan-from-dash"
+            >
+              Open Week Plan
+            </button>
+          </>
+        )}
+      </section>
+
+      <section className="pt-1" data-testid="dash-weekly-snapshot">
+        <h3 className="text-sm font-medium text-brand-muted mb-2">Weekly snapshot</h3>
+        <div className="glass-panel p-3.5 space-y-2">
+          <div className="flex items-baseline justify-between border-b border-brand-border/30 pb-2">
+            <span className="text-xs text-brand-muted">Planned time</span>
+            <span className="text-base font-semibold text-brand-text">{plannedHours.toFixed(1)} hrs</span>
+          </div>
+          <div className="flex items-baseline justify-between border-b border-brand-border/30 pb-2">
+            <span className="text-xs text-brand-muted">Completed time</span>
+            <span className="text-base font-semibold text-brand-text">{completedHours.toFixed(1)} hrs</span>
+          </div>
+          <div className="flex items-baseline justify-between">
+            <span className="text-xs text-brand-muted">Consistency</span>
+            <span className="text-base font-semibold text-brand-text">{consistencyScore}/10</span>
           </div>
         </div>
-      </div>
+      </section>
 
-      <StravaPanel />
+      {viewingSession && (
+        <WorkoutDetailModal
+          session={viewingSession}
+          onClose={() => setViewingSession(null)}
+          onToggleComplete={() => handleToggleComplete(viewingSession)}
+        />
+      )}
     </div>
   );
 }
